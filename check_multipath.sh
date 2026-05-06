@@ -1,49 +1,42 @@
 #!/bin/bash
 
-# Define the input file (ensure this file exists in the same directory)
+# Configuration
 INPUT_FILE="server_list.txt"
 REPORT_FILE="multipath_audit_$(date +%F).log"
 
-# Check if the input file exists before starting
 if [[ ! -f "$INPUT_FILE" ]]; then
     echo "Error: $INPUT_FILE not found!"
     exit 1
 fi
 
-echo "Starting Multipath Audit..."
-echo "Report: $REPORT_FILE"
-echo "=====================================================" > "$REPORT_FILE"
+echo "Starting Audit on 2000+ servers..."
+> "$REPORT_FILE" # This clears the file at the start
 
-# Read the file line by line
-while IFS= read -r SERVER || [[ -n "$SERVER" ]]; do
-    # Skip empty lines or commented lines
+# Use a custom file descriptor (3) to avoid the SSH stdin conflict
+while IFS= read -u 3 -r SERVER || [[ -n "$SERVER" ]]; do
     [[ -z "$SERVER" || "$SERVER" =~ ^# ]] && continue
 
-    echo "Processing: $SERVER"
-    echo "[SERVER: $SERVER]" >> "$REPORT_FILE"
-
-    # Execute the check
-    # We use 'multipath -ll' and filter for the H:C:T:L patterns (e.g., 1:0:0:1)
-    # The 'timeout' command prevents the script from hanging on unresponsive IPs
-    OUTPUT=$(ssh -o ConnectTimeout=5 -o BatchMode=yes -t "$SERVER" "sudo multipath -ll" 2>/dev/null)
+    echo "Checking: $SERVER"
+    
+    # -n: Prevents SSH from reading the rest of the server list
+    # -o ConnectTimeout: Stops the script from hanging on dead servers
+    OUTPUT=$(ssh -n -o ConnectTimeout=5 -o BatchMode=yes -t "$SERVER" "sudo multipath -ll" 2>/dev/null)
 
     if [[ $? -eq 0 ]]; then
-        # Grab the specific path combinations (the 1.0.0 or 1.0.1 style IDs)
-        # We replace the colons with dots to match your requested format
+        # Format the output to 1.0.0 style as requested
         PATHS=$(echo "$OUTPUT" | grep -oE '[0-9]+:[0-9]+:[0-9]+' | sort -u | tr ':' '.')
         
+        echo "[SERVER: $SERVER]" >> "$REPORT_FILE"
         if [[ -z "$PATHS" ]]; then
-            echo "Status: No multipath devices found." >> "$REPORT_FILE"
+            echo "Status: No multipath devices." >> "$REPORT_FILE"
         else
-            echo "Detected Path Combinations:" >> "$REPORT_FILE"
-            echo "$PATHS" >> "$REPORT_FILE"
+            echo "Paths Found: $PATHS" >> "$REPORT_FILE"
         fi
     else
-        echo "Status: CONNECTION FAILED (Check SSH/Sudo permissions)" >> "$REPORT_FILE"
+        echo "[SERVER: $SERVER] Status: FAILED" >> "$REPORT_FILE"
     fi
+    echo "-----------------------------------" >> "$REPORT_FILE"
 
-    echo "-----------------------------------------------------" >> "$REPORT_FILE"
+done 3< "$INPUT_FILE" # Redirect file to descriptor 3
 
-done < "$INPUT_FILE"
-
-echo "Done! Check $REPORT_FILE for the details."
+echo "Audit complete. Results in $REPORT_FILE"
